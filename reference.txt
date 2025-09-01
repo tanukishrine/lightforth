@@ -1,0 +1,202 @@
+### STACK MANIPULATION ### <3
+drop	( n -- )
+dup	( n -- n n )
+over	( n1 n2 -- n1 n2 n1 )
+swap	( n1 n2 -- n2 n1 )
+rot	( n1 n2 n3 -- n2 n3 n1 )
+>r	( n -- ) "to-r"			Push item to return stack.
+r>	( -- n ) "r-from"		Pop item from return stack.
+r@	( -- n ) "r-fetch"		Copy item from return stack.
+depth	( -- n )			Count number of items on stack.
+
+### COMPARISON ### <3
+<	( n1 n2 -- flag )
+=	( n1 n2 -- flag )
+>	( n1 n2 -- flag )
+0<	( n -- flag )
+0=	( n -- flag )
+0>	( n -- flag )
+
+### ARITHMETIC AND LOGICAL ### <3
++	( n1 n2 -- sum )
+-	( n1 n2 -- diff )
+1+	( n -- n+1 )
+1-	( n -- n-1 )
+2*	( n -- n*2 )
+2/	( n -- n/2 )
+*	( n1 n2 -- prod )
+/	( n1 n2 -- quot )
+mod	( n1 n2 -- rem )
+max	( n1 n2 -- max )
+min	( n1 n2 -- min )
+abs	( n -- |n| )
+negate	( n -- -n )
+and	( n1 n2 -- and )
+or	( n1 n2 -- or )
+xor	( n1 n2 -- xor )
+not	( n -- not )
+
+### MEMORY ### <3
+@	( addr -- n )
+!	( n addr -- )
+c@	( addr -- byte )
+c!	( n addr -- )
++!	( n addr -- )
+move	( addr1 addr2 n -- )		Move *n* cells in memory from *addr1* to *addr2*.
+cmove	( addr1 addr2 n -- )		Move *n* bytes in memory from *addr1* to *addr2*.
+fill	( addr n byte -- )		Fill *n* bytes in memory with *byte* beginning at *addr*.
+
+### CONTROL STRUCTURES ###
+branch	( -- )				Add offset to instruction pointer.
+0branch ( n -- )			If n == 0, add offset to instruction pointer.
+exit	( -- )				Terminate execution of colon definition. 
+do ... loop	do: ( limit start -- )	Set up loop, given index range.
+i	( -- index )
+j	( -- index )
+leave	( -- )				Terminate loop at next LOOP or +LOOP, by setting limit equal to index.
+do ... +loop	do: ( limit start -- )
+		+loop: ( n -- )
+if ... then	if: ( flag -- )
+if ... else
+   ... then
+begin ... until	until: ( flag -- )
+begin ... while	while: ( flag -- )
+      ... repeat
+
+### TERMINAL INPUT-OUTPUT ###
+key	( -- char )			Read a key from keyboard.
+emit	( char -- )			Print char.
+count	( addr -- addr+1 n )		Parse counted string.
+cr	( -- )				: cr 10 emit ;
+space	( -- )				: space 32 emit ;
+spaces	( n -- )			: spaces 0 do space loop ;
+type	( addr n -- )			: type 0 do dup emit 1+ loop ;
+expect	( addr n -- )			Read *n* characters from terminal to address, with null(s) at end.
+query	( -- )				Read line from terminal to input buffer.
+interpret ( -- )
+char	( -- char )			: char parse drop c@ ;
+word	( char -- addr )		Read next word from input stream using *char* as delimiter, or until null.
+."	( -- )				Print message (terminated by ").
+
+### NUMERIC CONVERSION ###
+base	( -- addr )			System variable containing radix for numeric conversion.
+decimal	( -- )				Set decimal number base.
+.	( n -- )			Print n as a decimal.
+
+### COMPILER ### <3
+buffer	( -- addr )			Address of input buffer.
+>in	( -- addr )			Character pointer to input buffer.
+parse	( -- addr u )			Parse next word from the input stream.
+number	( addr u -- addr u | n 0 )	Attempt to convert counted string into a decimal number.
+find	( addr u -- header )		Leave the header of next word in input stream.
+execute	( header -- )			Execute header.
+literal	( n -- )			runtime: ( -- n ) Compile "n" into dictionary as a literal.
+,	( n -- )			Compile "n" into the dictionary.
+allot	( n -- )			Reserve *n* address units of data space.
+compile, ( header -- )			Compile a call to word into dictionary.
+here	( -- addr )			Number of cells alloted to the latest word.
+state	( -- addr )			Non-zero during compilation mode.
+[	( -- )				To immediate mode.
+]	( -- )				To compile mode.
+immediate ( -- )			Mark latest word to be executed during compilation.
+hidden	( -- )				Mark latest word as hidden (from FIND).
+>count	( header -- length )		: >count CELL + ;
+>data	( header -- data )		: >body CELL + 32 + ;
+'	( "<spaces><name>" -- header )	: ' parse find ;
+[']	( "<spaces><name>" -- )		runtime: ( -- header ) : ['] parse find ; immediate
+compile ( "<spaces><name>" -- )		: compile ' compile, ;
+hide	( "<spaces><name>" -- )		: hide parse find (invert hidden flag) ;
+quit	( -- )				Clear return stack. Set immediate mode. Return to terminal.
+abort	( -- )				Clear data stack and perform QUIT.
+latest	( -- addr )			Pointer to the latest defined word.
+
+### DEFINING WORDS ###
+: xxx ... ;				create : compile hidden compile ]
+					create ; compile exit compile hidden compile [
+variable xxx
+constant xxx
+create xxx does> ...
+
+### MISCELLANEOUS ###
+(	( -- )				Comment out, delimited by ")".
+pad	( -- addr )			Address of a scratch area of 1 block.
+
+
+### EXTENSION WORDS ###
+
+# VARIABLES # <3
+ip	( -- addr )			Instruction pointer.
+sp	( -- addr )			Data stack pointer.
+rp	( -- addr )			Return stack pointer.
+eol	( -- addr )			Variable for End-Of-Line flag.
+
+# CONSTANTS #
+CELL		( -- n )		Size of a cell (byte-wise).
+BLOCK		( -- 1024 )
+FLAG_IMMEDIATE	( -- 0x80 )
+FLAG_HIDDEN	( -- 0x40 )
+FLAG_PRIMITIVE	( -- 0x20 )
+FLAG_LENMASK	( -- 0x1f )
+S0		( -- addr )		Addr of the cell before the first item on the data stack.
+R0		( -- addr )		Addr of the cell before the first item on the return stack.
+
+
+>>> INPUT BUFFER <<<
+size 1048 bytes (block)
+
+>>> QUIT <<<
+r0 rp ! ( reset return stack )
+QUERY
+INTERPRET
+EOL 0branch -> INTERPRET
+branch -> QUERY
+
+>>> INTERPRET <<<
+PARSE ( -- addr u | 0 0 )
+if NULL
+  DROP
+  EOL !
+  exit
+call NUMBER ( addr u -- addr u | n 0 )
+if NULL
+  DROP
+  if STATE
+    LITERAL ( n -- )
+  exit
+call FIND ( addr u -- addr u | xt 0 )
+if NULL
+  DROP
+  if STATE
+    if ?IMMEDIATE
+      EXECUTE
+    elif ?PRIMITIVE
+      >DATA @ ,
+    else
+      COMPILE,
+  else
+    EXECUTE
+else
+  FLUSH input source.
+  TYPE
+  ." not found"
+  ABORT
+
+>>> QUERY <<<
+get line from input source to input buffer
+reset >IN to BUFFER
+
+>>> PARSE <<<
+increment >IN until non-white space, leave addr onto stack
+increment >IN until first-white space, leave u (diff) onto stack
+if >IN hits end of input buffer, return u = 0
+
+>>> NUMBER <<<
+see if the PARSEd string is a number
+yes: push number and null flag onto stack
+no: leave addr and u on the stack
+
+>>> DICTIONARY STRUCTURE <<<
+[cell]	link		
+[1]	namelen & flags
+[31]	name
+[...]	data

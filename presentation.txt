@@ -1,0 +1,177 @@
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+	lightFORTH
+
+	a FORTH programming language
+
+
+
+
+
+
+
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+	What is FORTH?
+
+
+	FORTH is a stack-based concatinative
+        "syntax-less" language.
+
+	Invented by Chuck Moore, it is an old
+	language that pre-dates even the beginning
+	of time (January 1st, 1970).
+
+	
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+	FORTH could be described as to be
+	lying between Macro Assemblers and
+	the C language.
+
+	It is an elegantly SIMPLE language.
+	So much so that a single person can
+	understand the ENTIRE system, without
+	compromise.
+
+	Yet due to this philosophy, it is
+	also highly difficult to master.
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+	FORTH can also be described as an
+	operating system. With very litte, it
+	can bootstrap itself to build onto
+	any systems.
+
+	There are implementations of FORTH
+	that can fit on a 512-byte boot sector.
+
+	It has been used in embedded systems,
+	astronomical research, and aerospace.
+	Especially in contexts of limited
+	computing power.
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+	Why FORTH then?
+
+
+	Due to its *light*weight nature, I saw
+	it to be a reasonable goal impliment
+	my own version of a FORTH compiler and
+	interpreter for this event.
+
+	Thanks to its Read-Eval-Print-LOOP model
+	you are able to build, debug, and expand
+	the language and its programs very quickly.
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+	Implementation details:
+
+	As a guideline, I have followed the
+	1979 FORTH ANSI standard. With some
+	deviations, such as expanding it to
+	64-bit from 16-bit.
+
+	The kernel for lightFORTH has been
+	written in about ~500 lines of C.
+
+	The rest has been written using
+	lightFORTH itself.
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+	The C language was chosen due to its
+	abstracting and highly portable
+	properties.
+
+	It can be easily ported to embedded
+	systems, and run on almost any machines.
+
+
+
+
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+	Perfomance Benchmark:
+
+	For a quick comparison, I have tested
+	3 different languages on how quickly
+	they where able to print through a
+	basic for loop between 0 and 10,000,000.
+
+	for (i = 0, i < 10000000, i++) print(i)
+
+	Python		~35 sec (46% slower)
+	lightFORTH	~25 sec (4% slower)
+	C		~24 sec
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+	What does the language look like?
+
+	: fib ( n -- )
+	  >r 0 1
+	  begin
+	    over . cr
+	    2dup +
+	    rot drop
+	  over r@ >
+	  until
+	  r> drop
+	;
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+	A live demonstration...
+
+
+
+
+
+
+
+
+
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+	Thank you
+
+
+
+
+
+
+
+
+
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
