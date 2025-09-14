@@ -15,8 +15,6 @@ create ; immediate
 
 : clearstack S0 sp ! ;
 
-: abort clearstack quit ;
-
 
 : '
   parse find
@@ -34,6 +32,8 @@ create ; immediate
 : count dup c@ swap 1+ ;
 
 : cells CELL * ;
+
+: ? @ . ;
 
 
 \ CONTROL STRUCTURES
@@ -145,6 +145,10 @@ create ; immediate
   over over
 ;
 
+: 2drop ( a b -- )
+  drop drop
+;
+
 
 \ terminal input-output
 
@@ -164,10 +168,32 @@ create ; immediate
   drop
 ;
 
-
-: >pad
+: type ( c-addr u -- )
+  begin
+  dup 0> while
+    swap
+    dup c@ emit
+    1+ swap 1-
+  repeat
+  2drop
 ;
 
+: &here ( -- addr )
+  latest >body
+  here @ cells +
+;
+
+: callot ( u -- )
+  CELL / 1+ allot
+;
+
+: parse" ( -- c-addr u )
+  parse
+  dup >r
+  pad swap
+  cmove
+  pad r>
+; immediate
 
 : constant
   create
@@ -182,15 +208,9 @@ create ; immediate
   1 allot
 ;
 
-variable >pad
-0 >pad !
-
-: pad!+ ( byte -- )
-  >pad @ pad + c!
-  1 >pad +!
-;
 
 : ." ( -- ) \ interpret mode only
+  char drop
   begin
     char
     dup 0 = if
@@ -202,5 +222,8 @@ variable >pad
     emit
   again
 ;
+
+
+." Welcome to lightforth" cr
 
 include example.fs

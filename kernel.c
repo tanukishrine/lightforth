@@ -322,7 +322,7 @@ void number() /* ( addr len -- addr len | number null ) */
 	cell result = 0;
 	cell negate = 0;
 	char* ptr = (char*) addr;
-	if (*ptr == 0x2d)
+	if (*ptr == 0x2d && len > 1)
 	{
 		negate = -1;
 		ptr++;
@@ -437,6 +437,11 @@ void create() /* ( "<spaces><name>" -- ) */
 /* literal strings */
 /* to be added... */
 
+void ok()
+{
+	if (!fp) fputs(" ok\n", stdout);
+}
+
 void query()
 {
 	in = buffer;
@@ -445,8 +450,16 @@ void query()
 		if (fgets(buffer, BLOCK, fp)) return;
 		fclose(fp);
 		fp = NULL;
+		ok();
 	}
 	fgets(buffer, BLOCK, stdin);
+}
+
+void _abort()
+{
+	fp = NULL;
+	sp = s0;
+	eol = 1;
 }
 
 void interpret()
@@ -471,6 +484,7 @@ void interpret()
 	{
 		drop();
 		printf("Word not found.\n");
+		_abort();
 		return;
 	}
 	if (state)
@@ -492,20 +506,47 @@ void interpret()
 	}
 }
 
-void quit() { eol = 0; rp = r0; query(); }
-
-void fetch_eol() { push(eol); }
-
-void ok() { if (!fp) fputs(" ok\n", stdout); }
-
-void printword() /* DEBUG */
+void quit()
 {
-	printf("link: %p\n", latest -> link);
-	printf("namelen: %d\n", latest -> namelen /* & FLAG_LENMASK */);
-	printf("name: %s\n", latest -> name);
+	rp = r0;
+	eol = 0;
+	query();
+}
+
+void fetch_eol()
+{
+	push(eol);
+}
+
+void debug()
+{
+	printf("link:\t%p\t%p\n", &(latest -> link), latest -> link);
+	printf("size:\t%p\t%d\n", &(latest -> namelen), (latest -> namelen));
+	printf("name:\t%p\t%s\n", &(latest -> name), latest -> name);
 	cell count = 0;
-	while (count < here) printf("code: %ld\n", (cell) (latest -> data[count++]));
-	printf("\n");
+	while (count < here) printf("code:\t%p\t%p\n", &(latest -> data[count]), latest -> data[count++]);
+}
+
+void dump()
+{
+	size_t size = (size_t) pop();
+	unsigned char * p = (unsigned char *) pop();
+	size_t i = 0, j = 0; char c;
+
+	for (i; i < size; i++)
+	{
+		printf("%02x ", p[i]);
+		if (i - j > 6)
+		{
+			fputs(" | ", stdout);
+			for (j; j <= i; j++)
+			{
+				c = (p[j] > 32 && p[j] < 128) ? p[j] : '.';
+				printf("%c", (uint8_t) c); 
+			}
+			putchar('\n');
+		}
+	}
 }
 
 void printstack() /* DEBUG */
@@ -549,6 +590,7 @@ void init()
 
 	/* arithmetic and logical */
 	word_primitive(1, "+", 0, add);
+	word_primitive(1, "-", 0, sub);
 	word_primitive(2, "1+", 0, incr);
 	word_primitive(2, "1-", 0, decr);
 	word_primitive(2, "2*", 0, ls);
@@ -636,7 +678,9 @@ void init()
 
 	/* DEBUG */
 	word_primitive(2, ".s", 0, printstack);
-	word_primitive(5, "debug", 0, printword);
+	word_primitive(5, "debug", 0, debug);
+	word_primitive(4, "dump", 0, dump);
+	word_primitive(5, "abort", 0, _abort);
 
 	/* quit */
 	word_header(4, "quit", 0);
