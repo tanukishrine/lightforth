@@ -1,43 +1,51 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
+#include <stddef.h>
+#include <stdalign.h>
 
-#define BLOCK 1024
-#define FLAG_IMMEDIATE	0x80
-#define FLAG_HIDDEN	0x40
-#define FLAG_PRIMITIVE	0x20
-#define FLAG_LENMASK	0x1f
+#define VERSION 20250926
 
+#define BLOCK_SIZE 1024
+#define DICTIONARY_SIZE (BLOCK_SIZE * 64)
+
+#define FLAG_IMMEDIATE 0x80
+#define FLAG_HIDDEN    0x40
+#define FLAG_PRIMITIVE 0x20
+#define FLAG_LENMASK   0x1f
+
+typedef uint8_t byte;
 typedef intptr_t cell;
 typedef void (*code)();
-
-/* dictionary structure */
-typedef struct word
-{
-	struct word* link;
-	char namelen; /* and flags */
-	char name[31];
-	code data[];
-} word;
 
 /* instruction pointer */
 code* ip = NULL;
 
-/* global variables */
-cell state = 0;		/* interpreted or compile mode */
-word* latest = NULL;	/* pointer to latest defined word */
-cell here = 0;		/* data index to thereof */
-cell eol = 0;		/* end of line flag */
-FILE* fp = NULL;	/* file pointer */
+/* file pointer */
+FILE* fp = NULL;
+
+/* input buffer */
+byte  buffer[BLOCK_SIZE];
+byte* in = buffer;
+
+/* end of line */
+cell out = 0;
+
+/* dictionary globals */
+byte* dictionary = NULL; /* start of dictionary space */
+byte* latest     = NULL; /* most recently defined word */
+byte* here       = NULL; /* pointer to next free memory */
+
+/* interpreted or complied mode */
+cell state = 0;
 
 /* parameter stack */
-cell stack[BLOCK];
+cell  stack[BLOCK_SIZE];
 cell* s0 = stack - 1;
 cell* sp = stack - 1;
 
 /* return stack */
-cell rstack[BLOCK];
+cell  rstack[BLOCK_SIZE];
 cell* r0 = rstack - 1;
 cell* rp = rstack - 1;
 
@@ -51,158 +59,277 @@ void rpush(cell w) { *++rp = w; }
 cell rpop() { return *rp--; }
 cell rpeek() { return *rp; }
 
-
-/* memory copy */
-void memmov(char* addr1, char* addr2, char n)
+/* append byte to latest */
+void byte_append(byte x)
 {
-	while (n--) *addr1++ = *addr2++;
+	*here++ = x;
 }
 
-/* memory comparison */
-cell memequ(char* addr0, char* addr1, char n)
+/* append cell to latest */
+void cell_append(cell w)
 {
-	while (n--) if (*addr0++ != *addr1++) return n + 1;
-	return 0;
+	*((cell*) here) = w;
+	here += sizeof(cell);
+}
+
+/* UNUSED */
+/* append string to latest */
+void string_append(byte* addr, cell size)
+{
+	while (size--) byte_append(*addr++);
+}
+
+/* align upwards to accept cell type */
+void align()
+{
+	uintptr_t ptr = (uintptr_t) here;
+	here = (byte*) ((ptr + alignof(cell) - 1)
+		& ~(alignof(cell) - 1));
 }
 
 /* create new word header */
-void word_header(char namelen, char* name, char flags)
+void header(byte namelen, byte* name)
 {
-	word* new = malloc(sizeof(word));
-	if (!new) { perror(NULL); exit(EXIT_FAILURE); }
-	new -> link = latest;
-	new -> namelen = namelen | flags;
-	memmov(new -> name, name, namelen);
-	latest = new;
-	here = 0;
+	align();
+	byte* head = here;
+	cell_append((cell) latest);
+	latest = head;
+	byte_append(namelen);
+	string_append(name, (cell) namelen & FLAG_LENMASK);
+	align();
 }
 
-/* allot n cells to latest */
-void word_allot(cell n)
+/* return addr of name from header*/
+void to_count() /* ( header -- count ) */
 {
-	size_t size = sizeof(word) + sizeof(cell) * here + sizeof(cell) * n;
-	word* new = realloc(latest, size);
-	if (!new) { perror(NULL); exit(EXIT_FAILURE); }
-	latest = new;
-	here += n;
+	*sp = (cell) ((byte*) *sp + sizeof(cell));
 }
 
-/* append word to latest */
-void word_append(code w)
+/* parse addr as a counted string */
+void count() /* ( count -- addr len ) */
 {
-	word_allot(1);
-	latest -> data[here - 1] = w;
+	byte* addr = (byte*) pop();
+	push((cell) addr + 1);
+	push((cell) *addr);
 }
 
+/* return the addr of body from header */
+void to_body() /* ( header -- body ) */
+{
+	byte* ptr = (byte*) pop() + sizeof(cell);
+	byte len = (*ptr & FLAG_LENMASK) + 1;
+	byte rounded = len + (sizeof(cell) - 1) & ~(sizeof(cell) - 1);
+	push((cell) (ptr + rounded));
+}
 
-/* stack manipulation */
+/* call to word */
+void call()
+{
+	rpush((cell) (ip + 1));
+	ip = (code*) *ip;
+}
 
-void drop() { sp--; }
+/* exit from word */
+void ret()
+{
+	ip = (code*) rpop();
+}
 
-void dup() { sp++; *sp = *(sp - 1); }
+/* literal */
+void lit()
+{
+	push((cell) *ip++);
+}
 
-void over() { sp++; *sp = *(sp - 2); }
+/* branch ( -- ) */
+void branch()
+{
+	ip = (code*) ((cell) ip + (cell) *ip);
+}
 
+/* zbranch ( f -- ) */
+void zbranch()
+{
+	if (pop()) ip++;
+	else branch();
+}
+
+/* string literal */
+void litstring()
+{
+	push((cell) *ip++);
+	push((cell) *ip++);
+	cell ptr = (cell) ip + (cell) *sp;
+	ip = (code*) ((ptr + sizeof(cell) - 1)
+		& ~(sizeof(cell) - 1));
+}
+
+/* drop ( a -- ) */
+void drop()
+{
+	sp--;
+};
+
+/* dup ( a -- a a ) */
+void dup()
+{
+	sp++; *sp = *(sp - 1);
+}
+
+/* over ( a b -- a b a ) */
+void over()
+{
+	sp++;
+	*sp = *(sp - 2);
+}
+
+/* swap ( a b -- b a ) */
 void swap()
 {
 	cell temp = *sp;
 	*sp = *(sp - 1);
-	*(sp - 1) = temp;
+	*(sp - 1) = temp; 
 }
 
+/* rot ( a b c -- b a c ) */
 void rot()
 {
-	cell temp = *(sp - 2);
-	*(sp - 2) = *(sp - 1);
+	cell temp = *(sp - 2); 
+	*(sp - 2) = *(sp - 1); 
 	*(sp - 1) = *sp;
 	*sp = temp;
 }
 
-void to_r() { *++rp = *sp--; }
+/* >r ( a -- ) ( R: -- a ) */
+void to_r()
+{
+	*++rp = *sp--;
+}
 
-void r_from() { *++sp = *rp--; }
+/* r> ( -- a ) ( R: a -- ) */
+void r_from()
+{
+	*++sp = *rp--;
+}
 
-void r_fetch() { *++sp = *rp; }
+/* 2* ( a -- a*2 ) */
+void left_shift()
+{
+	*sp <<= 1;
+}
 
-void depth() { *++sp = sp - s0; }
+/* 2/ ( a -- a/2 ) */
+void right_shift()
+{
+	*sp >>= 1;
+}
 
+/* not ( a -- ~a ) */
+void not()
+{
+	*sp = ~*sp;
+}
 
-/* comparison */
+/* and ( a b -- a&b ) */
+void and()
+{
+	sp--;
+	*sp = *sp & *(sp + 1);
+}
 
-void lt() { push((pop() > pop()) ? -1 : 0); }
+/* xor ( a b -- a^b ) */
+void xor()
+{
+	sp--;
+	*sp = *sp ^ *(sp + 1);
+}
 
-void eq() { push((pop() == pop()) ? -1 : 0); }
+/* or ( a b -- a|b ) */
+void or()
+{
+	sp--;
+	*sp = *sp | *(sp + 1);
+}
 
-void gt() { push((pop() < pop()) ? -1 : 0); }
+/* + ( a b -- a+b ) */
+void add()
+{
+	sp--;
+	*sp = *sp + *(sp + 1);
+}
 
-void ltz() { push((pop() < 0) ? -1 : 0); }
+/* - ( a b -- a-b ) */
+void sub()
+{
+	sp--;
+	*sp = *sp - *(sp + 1);
+}
 
-void eqz() { push((pop() == 0) ? -1 : 0); }
+/* * ( a b -- a*b ) */
+void mul()
+{
+	sp--;
+	*sp = *sp * *(sp + 1);
+}
 
-void gtz() { push((pop() > 0) ? -1 : 0); }
+/* / ( a b -- a/b ) */
+void quot()
+{
+	sp--;
+	*sp = *sp / *(sp + 1);
+}
 
+/* mod ( a b -- a%b ) */
+void rem()
+{
+	sp--;
+	*sp = *sp % *(sp + 1);
+}
 
-/* arithmetic and logical */
+/* < ( a b -- a<b ) */
+void lt()
+{
+	push((pop() > pop()) ? -1 : 0);
+}
 
-void add() { sp--; *sp = *sp + *(sp + 1); }
+/* = ( a b -- a=b ) */
+void eq()
+{
+	push((pop() == pop()) ? -1 : 0);
+}
 
-void sub() { sp--; *sp = *sp - *(sp + 1); }
+/* > ( a b -- a>b ) */
+void gt()
+{
+	push((pop() < pop()) ? -1 : 0);
+}
 
-void incr() { *sp += 1; }
+/* c@ ( addr -- byte ) */
+void cfetch()
+{
+	*sp = *((byte*) *sp);
+}
 
-void decr() { *sp -= 1; }
+/* c! ( byte addr -- ) */
+void cstore()
+{
+	byte* addr = (byte*) pop();
+	byte n = (byte) pop();
+	*addr = n;
+}
 
-void ls() { *sp <<= 1; }
-
-void rs() { *sp >>= 1; }
-
-void mul() { sp--; *sp = *sp * *(sp + 1); }
-
-void quot() { sp--; *sp = *sp / *(sp + 1); }
-
-void rem() { sp--; *sp = *sp % *(sp + 1); }
-
-void max() { sp--; if (*sp < *(sp + 1)) *sp = *(sp + 1); }
-
-void min() { sp--; if (*sp > *(sp + 1)) *sp = *(sp + 1); }
-
-void mag() { if (*sp < 0) *sp = -*sp; }
-
-void negate() { *sp = -*sp; }
-
-void and() { sp--; *sp = *sp & *(sp + 1); }
-
-void or() { sp--; *sp = *sp | *(sp + 1); }
-
-void xor() { sp--; *sp = *sp ^ *(sp + 1); }
-
-void not() { *sp = ~*sp; }
-
-
-/* memory */
-
+/* @ ( addr -- n ) */
 void fetch()
 {
 	*sp = *((cell*) *sp);
 }
 
+/* ! ( n addr -- ) */
 void store()
 {
 	cell* addr = (cell*) pop();
 	cell n = pop();
 	*addr = n;
-}
-
-void cfetch()
-{
-	*sp = *((char*) *sp);
-}
-
-void cstore()
-{
-	char* addr = (char*) pop();
-	char byte = (char) pop();
-	*addr = byte;
 }
 
 void addstore()
@@ -212,88 +339,132 @@ void addstore()
 	*addr += diff;
 }
 
-void move() /* ( addr1 addr2 n -- ) */
+/* move ( addr0 addr1 n -- ) */
+void move()
 {
-	size_t n = (size_t) pop();
-	void* addr2 = (void*) pop();
-	void* addr1 = (void*) pop();
-	memmov(addr2, addr1, n * sizeof(cell));
+	cell n = pop() * sizeof(cell);
+	byte* addr1 = (byte*) pop();
+	byte* addr0 = (byte*) pop();
+	while (n--) *addr1++ = *addr0++;
 }
 
-void cmove() /* ( addr1 addr2 n -- ) */
+/* cmove ( addr0 addr1 n -- ) */
+void cmove()
 {
-	size_t n = (size_t) pop();
-	void* addr2 = (void*) pop();
-	void* addr1 = (void*) pop();
-	memmov(addr2, addr1, n);
+	cell n = pop();
+	byte* addr1 = (byte*) pop();
+	byte* addr0 = (byte*) pop();
+	while (n--) *addr1++ = *addr0++;
 }
 
+/* fill ( addr n byte -- ) */
 void fill()
 {
-	char byte = (char) pop();
+	byte x = (byte) pop();
 	cell n = (cell) pop();
+	byte* addr = (byte*) pop();
+	while (n--) *addr++ = x;
+}
+
+/* key ( -- char ) */
+void key()
+{
+	push((cell) getchar());
+}
+
+/* emit ( char -- ) */
+void emit()
+{
+	putchar((int) pop());
+}
+
+/* expect ( addr n -- ) */
+void expect()
+{
+	size_t len = (size_t) pop();
 	char* addr = (char*) pop();
-	while (n--) *addr++ = byte;
+	fgets(addr, len, stdin);
 }
 
-
-/* terminal input-output */
-
-void key() { push((cell) getchar()); }
-
-void emit() { putchar((int) pop()); }
-
-void dot() { printf("%ld ", pop()); }
-
-
-/* call to words */
-void call() { rpush((cell) (ip + 1)); ip = (code*) *ip; }
-
-/* exit from words */
-void ret() { ip = (code*) rpop(); }
-
-/* literals */
-void lit() { push((cell) *ip++); }
-
-
-/* branching */
-
-void branch() { ip += (cell) *ip; }
-
-void zbranch() { if (pop()) ip++; else branch(); }
-
-
-/* macro for built-in primivites*/
-void word_primitive(char namelen, char* name, char flags, code func)
+/* type ( addr n -- ) */
+void type()
 {
-	word_header(namelen, name, flags | FLAG_PRIMITIVE);
-	word_append(func);
-	word_append(ret);
+	cell count = pop();
+	byte* ptr = (byte*) pop();
+	while (count--) putchar(*ptr++);
 }
 
-/* macro for built-in primivites*/
-void word_literal(char namelen, char* name, code x)
+/* parse ( char -- addr len ) */
+void parse()
 {
-	word_header(namelen, name, 0);
-	word_append(lit);
-	word_append(x);
-	word_append(ret);
+	byte x = (byte) pop();
+	cell addr = (cell) in;
+	cell len = 0;
+	while (*in)
+	{
+		len++;
+		if ((byte) *in++ == x) break;
+	}
+	push(addr);
+	push(len);
 }
 
-/* input buffer */
-char buffer[BLOCK];
-char* in = buffer;
 
-char pad[BLOCK];
-
-/* compiler */
-
-void _char() /* ( -- byte ) */
+/* DEBUG */
+void dot()
 {
-	push((cell) *in++);
+	printf("%ld ", pop());
 }
 
-void parse() /* ( -- addr len | null null ) */
+/* DEBUG */
+void printstack()
+{
+	fputs("[ ", stdout);
+	cell* ptr = s0 + 1;
+	while (ptr <= sp) printf("%ld ", *ptr++);
+	fputs("] ", stdout);
+}
+
+/* in according to the traditions of our great fathers */
+void ok()
+{
+	if (fp) return;
+	fputs(" ok\n", stdout);
+}
+
+/* fetch next line from input stream to buffer */
+void query()
+{
+	in = buffer;
+	if (fp)
+	{
+		if (fgets(buffer, BLOCK_SIZE, fp)) return;
+		fclose(fp);
+		fp = NULL;
+		ok();
+	}
+	fgets(buffer, BLOCK_SIZE, stdin);
+}
+
+/* reset return stack and call query */
+void reset()
+{
+	out = 0;
+	rp = r0;
+	query();
+}
+
+/* return control to terminal and clears data stack */
+void aborts()
+{
+	fp = NULL;
+	sp = s0;
+	state = 0;
+}
+
+/* parse next word in the input stream */
+/* word ( -- addr len | null null ) */
+void word()
 {
 	while (*in <= 0x20)
 	{
@@ -309,19 +480,21 @@ void parse() /* ( -- addr len | null null ) */
 	push(1);
 	while (*in > 0x20)
 	{
-		incr();
+		*sp += 1;
 		in++;
 	}
 }
 
-void number() /* ( addr len -- addr len | number null ) */
+/* parse string as a number */
+/* number ( addr len -- number null | addr len ) */
+void number()
 {
 	cell len = pop();
 	cell addr = pop();
 	cell count = 0;
 	cell result = 0;
 	cell negate = 0;
-	char* ptr = (char*) addr;
+	byte* ptr = (byte*) addr;
 	if (*ptr == 0x2d && len > 1)
 	{
 		negate = -1;
@@ -331,7 +504,7 @@ void number() /* ( addr len -- addr len | number null ) */
 	while (count++ < len)
 	{
 		result *= 10;
-		char w = *ptr++ - 0x30;
+		byte w = *ptr++ - 0x30;
 		if (w < 0 || w > 9)
 		{
 			push(addr);
@@ -345,360 +518,616 @@ void number() /* ( addr len -- addr len | number null ) */
 	push(0);
 }
 
-void find() /* ( addr len -- header ) */
+cell memequ(byte* addr0, byte* addr1, cell count)
 {
-	char len = (char) pop();
-	char* name = (char*) pop();
-	word* current = latest;
-	while (current)
+	while (count)
 	{
-		if (!(current -> namelen & FLAG_HIDDEN))
-		if ((current -> namelen & FLAG_LENMASK) == len)
-		if (!(memequ(current -> name, name, len)))
-			break;
-		current = current -> link;
+		if (*addr0++ != *addr1++) break;
+		count--;
 	}
-	push((cell) current);
+	return count;
 }
 
-void to_count() /* >count ( header -- count ) */
+/* find ( addr len -- header | null ) */
+void find()
 {
-	*sp = (cell) &(((word*) *sp) -> namelen);
+	byte len0 = (byte) pop();
+	byte* name0 = (byte*) pop();
+	cell* ptr = (cell*) latest;
+	while (ptr)
+	{
+		push((cell) ptr);
+		to_count();
+		count();
+		byte len1 = (byte) pop();
+		byte* name1 = (byte*) pop();
+		if (!(len1 & FLAG_HIDDEN))
+		if ((len1 & FLAG_LENMASK) == len0)
+		if (!(memequ(name0, name1, len0)))
+			break;
+		ptr = (cell*) *ptr;
+	}
+	push((cell) ptr);
 }
 
-void to_data()
-{
-	*sp = (cell) &(((word*) *sp) -> data);
-}
-
-void to_body() /* >body ( header -- body ) */
-{
-	*sp = (cell) (((word*) *sp) -> data);
-}
-
-void execute() /* ( body -- ) */
+/* execute ( ptr -- ) */
+void execute()
 {
 	rpush((cell) ip);
 	ip = (code*) pop();
 }
 
-void literal() /* ( n -- ) */
+/* literal ( n -- ) IMMEDIATE */
+void literal()
 {
-	word_append(lit);
-	word_append((code) pop());
+	cell_append((cell) lit);
+	cell_append((cell) pop());
 }
 
-void comma() /* ( n -- ) */
+/* compile ( header -- ) */
+void compile()
 {
-	word_append((code) pop());
-}
-
-void allot() /* ( n -- ) */
-{
-	word_allot(pop());
-}
-
-char peek_count()
-{
-	return ((word*) peek()) -> namelen;
-}
-
-void compile() /* compile, ( header -- ) */
-{
-	char flag = peek_count() & FLAG_PRIMITIVE;
+	dup();
+	to_count();
+	byte len = *((byte*) pop());
 	to_body();
-	if (flag)
+	if (len & FLAG_PRIMITIVE)
 	{
-		word_append((code) *((cell*) pop()));
+		cell_append(*((cell*) pop()));
 	}
 	else
 	{
-		word_append(call);
-		word_append((code) pop());
+		cell_append((cell) call);
+		cell_append((cell) pop());
 	}
 }
 
-void lbrac() { state = 0; }
-
-void rbrac() { state = 1; }
-
-void immediate() { latest -> namelen ^= FLAG_IMMEDIATE; }
-
-void hidden() { latest -> namelen ^= FLAG_HIDDEN; }
-
-void create() /* ( "<spaces><name>" -- ) */
+void is_out()
 {
-	parse();
-	char namelen = (char) pop();
-	char* name = (char*) pop();
-	word_header(namelen, name, 0);
+	push(out);
 }
 
-/* literal strings */
-/* to be added... */
-
-void ok()
-{
-	if (!fp) fputs(" ok\n", stdout);
-}
-
-void query()
-{
-	in = buffer;
-	if (fp)
-	{
-		if (fgets(buffer, BLOCK, fp)) return;
-		fclose(fp);
-		fp = NULL;
-		ok();
-	}
-	fgets(buffer, BLOCK, stdin);
-}
-
-void _abort()
-{
-	fp = NULL;
-	sp = s0;
-	eol = 1;
-}
-
+/* interpret ( -- ) */
 void interpret()
 {
-	parse();
+	word(); /* ( -- addr len | null null ) */
 	if (!peek())
 	{
 		drop();
 		drop();
-		eol = 1;
+		out = -1;
 		return;
 	}
-	number();
+	number(); /* ( addr len -- numb null | addr len ) */
 	if (!peek())
 	{
 		drop();
 		if (state) literal();
 		return;
 	}
-	find();
+	cell len = *sp;
+	cell addr = *(sp - 1);
+	find(); /* ( addr len -- header | null ) */
 	if (!peek())
 	{
 		drop();
-		printf("Word not found.\n");
-		_abort();
+		fputs("Word not found: ", stdout);
+		push(addr);
+		push(len);
+		type();
+		putchar('\n');
+		aborts();
+		out = -1;
 		return;
 	}
 	if (state)
 	{
-		if (peek_count() & FLAG_IMMEDIATE)
-		{
-			to_body();
-			execute();
-		}
-		else
-		{
-			compile();
-		}
+		dup();
+		to_count();
+		byte flag = *((byte*) pop()) & FLAG_IMMEDIATE;
+		if (flag) goto immediate;
+		compile();
+		return;
 	}
-	else
-	{
-		to_body();
-		execute();
-	}
+	immediate:
+	to_body();
+	execute();
 }
 
-void quit()
+/* c, ( a -- ) */
+void byte_comma()
 {
-	rp = r0;
-	eol = 0;
-	query();
+	byte_append((byte) pop());
 }
 
-void fetch_eol()
+/* , ( a -- ) */
+void comma()
 {
-	push(eol);
+	cell_append((cell) pop());
 }
 
-void debug()
+/* s, ( a -- ) */
+void string_comma()
 {
-	printf("link:\t%p\t%p\n", &(latest -> link), latest -> link);
-	printf("size:\t%p\t%d\n", &(latest -> namelen), (latest -> namelen));
-	printf("name:\t%p\t%s\n", &(latest -> name), latest -> name);
-	cell count = 0;
-	while (count < here) printf("code:\t%p\t%p\n", &(latest -> data[count]), latest -> data[count++]);
+	cell len = pop();
+	byte* addr = (byte*) pop();
+	string_append(addr, len);
 }
 
-void dump()
+/* header ( addr len -- ) */
+void _header()
+{
+	byte len = (byte) pop();
+	byte* addr = (byte*) pop();
+	header(len, addr);
+}
+
+/* to immediate mode [ ( -- ) immediate */
+void lbrac()
+{
+	state = 0;
+}
+
+/* to compile mode ] ( -- ) */
+void rbrac()
+{
+	state = 1;
+}
+
+/* DEBUG */
+void dump(byte* p, size_t size)
+{
+        size_t i = 0, j = 0, c = 0;
+
+        for (i; i < size; i++)
+        {
+                printf("%02x ", p[i]);
+                if (i - j >= 7)
+                {
+                        for (j; j <= i; j++)
+                        {
+                                c = (p[j] >= ' ' && p[j] < '~') ? p[j] : '.';
+				putchar(c);
+                        }
+			putchar('\n');
+                } 
+        }
+}
+
+/* dump ( addr len -- ) */
+void _dump()
 {
 	size_t size = (size_t) pop();
-	unsigned char * p = (unsigned char *) pop();
-	size_t i = 0, j = 0; char c;
-
-	for (i; i < size; i++)
-	{
-		printf("%02x ", p[i]);
-		if (i - j > 6)
-		{
-			fputs(" | ", stdout);
-			for (j; j <= i; j++)
-			{
-				c = (p[j] > 32 && p[j] < 128) ? p[j] : '.';
-				printf("%c", (uint8_t) c); 
-			}
-			putchar('\n');
-		}
-	}
+	byte* addr = (byte*) pop();
+	dump(addr, size);
 }
 
-void printstack() /* DEBUG */
-{
-	printf("s: ");
-	cell* ptr = s0 + 1;
-	while (ptr <= sp) printf("%ld ", *ptr++);
-}
-
+/* ( addr len -- ) */
 void include()
 {
-	parse();
-	char length = (char) pop();
-	char* addr = (char*) pop();
-	char buffer[length + 1];
-	memmov(buffer, addr, length);
-	buffer[length] = 0;
+	size_t len = (size_t) pop();
+	byte* addr = (byte*) pop();
+	byte* buffer = malloc(len + 1);
+
+	if (!buffer)
+	{
+		perror(NULL);
+		return;	
+	}
+
+	byte* ptr = buffer;
+	while (len--) *ptr++ = *addr++;
+	*ptr = '\0';
 	fp = fopen(buffer, "r");
+	free(buffer);
 }
 
-void init()
-{
-	/* stack manipulation */
-	word_primitive(4, "drop", 0, drop);
-	word_primitive(3, "dup", 0, dup);
-	word_primitive(4, "over", 0, over);
-	word_primitive(4, "swap", 0, swap);
-	word_primitive(3, "rot", 0, rot);
-	word_primitive(2, ">r", 0, to_r); /* potential issue, compile only? */
-	word_primitive(2, "r>", 0, r_from); /* potential issue, compile only? */
-	word_primitive(2, "r@", 0, r_fetch);
-	word_primitive(5, "depth", 0, depth);
 
-	/* comparison */
-	word_primitive(1, "<", 0, lt);
-	word_primitive(1, "=", 0, eq);
-	word_primitive(1, ">", 0, gt);
-	word_primitive(2, "0<", 0, ltz);
-	word_primitive(2, "0=", 0, eqz);
-	word_primitive(2, "0>", 0, gtz);
+/* Architecture */
+#if defined(__x86_64__) || defined(_M_X64)
+byte arch[] = "x86_64";
+#elif defined(__i386) || defined(_M_IX86)
+byte arch[] = "i386";
+#elif defined(__aarch64__)
+byte arch[] = "aarch64";
+#elif defined(__arm__) || defined(_M_ARM)
+byte arch[] = "arm";
+#elif defined(__riscv)
+byte arch[] = "riscv";
+#else
+byte arch[] = "unknown";
+#endif
 
-	/* arithmetic and logical */
-	word_primitive(1, "+", 0, add);
-	word_primitive(1, "-", 0, sub);
-	word_primitive(2, "1+", 0, incr);
-	word_primitive(2, "1-", 0, decr);
-	word_primitive(2, "2*", 0, ls);
-	word_primitive(2, "2/", 0, rs);
-	word_primitive(1, "*", 0, mul);
-	word_primitive(1, "/", 0, quot);
-	word_primitive(3, "mod", 0, rem);
-	word_primitive(3, "max", 0, max);
-	word_primitive(3, "min", 0, min);
-	word_primitive(3, "abs", 0, mag);
-	word_primitive(6, "negate", 0, negate);
-	word_primitive(3, "and", 0, and);
-	word_primitive(2, "or", 0, or);
-	word_primitive(3, "xor", 0, xor);
-	word_primitive(3, "not", 0, not);
+/* Operating system */
+#if defined(_WIN32)
+byte os[] = "windows";
+#elif defined(__linux__)
+byte os[] = "linux";
+#elif defined(__APPLE__) && defined(__MACH__)
+byte os[] = "macos";
+#elif defined(__unix__)
+byte os[] = "unix";
+#else
+byte os[] = "unknown";
+#endif
 
-	/* memory */
-	word_primitive(1, "@", 0, fetch);
-	word_primitive(1, "!", 0, store);
-	word_primitive(2, "c@", 0, cfetch);
-	word_primitive(2, "c!", 0, cstore);
-	word_primitive(2, "+!", 0, addstore);
-	word_primitive(4, "move", 0, move);
-	word_primitive(5, "cmove", 0, cmove);
-	word_primitive(4, "fill", 0, fill);
-
-	/* terminal input-output */
-	word_primitive(3, "key", 0, key);
-	word_primitive(4, "emit", 0, emit);
-	word_primitive(1, ".", 0, dot);
-
-	/* special words */
-	word_primitive(4, "call", 0, call);
-	word_primitive(4, "exit", 0, ret);
-	word_primitive(3, "lit", 0, lit);
-	word_primitive(6, "branch", 0, branch);
-	word_primitive(7, "0branch", 0, zbranch);
-	word_literal(2, "ip", (code) &ip);
-	word_literal(3, "eol", (code) &eol);
-
-	/* compiler */
-	word_literal(6, "buffer", (code) &buffer);
-	word_literal(3, ">in", (code) &in);
-	word_literal(3, "pad", (code) &pad);
-	word_primitive(4, "char", 0, _char);
-	word_primitive(5, "parse", 0, parse);
-	word_primitive(6, "number", 0, number);
-	word_primitive(4, "find", 0, find);
-	word_primitive(7, "execute", 0, execute);
-	word_primitive(7, "literal", 0, literal);
-	word_primitive(1, ",", 0, comma);
-	word_primitive(5, "allot", 0, allot);
-	word_primitive(8, "compile,", 0, compile);
-	word_literal(4, "here", (code) &here);
-	word_literal(5, "state", (code) &state);
-	word_primitive(1, "[", FLAG_IMMEDIATE, lbrac);
-	word_primitive(1, "]", 0, rbrac);
-	word_primitive(9, "immediate", FLAG_IMMEDIATE, immediate);
-	word_primitive(6, "hidden", 0, hidden);
-	word_primitive(6, ">count", 0, to_count);
-	word_primitive(5, ">data", 0, to_data);
-	word_primitive(5, ">body", 0, to_body); /* merge >data with >body */
-	word_literal(6, "latest", (code) &latest);
-
-	/* defining words */
-	word_primitive(6, "create", 0, create);
-
-	/* stack pointers */
-	word_literal(2, "S0", (code) s0);
-	word_literal(2, "sp", (code) &sp);
-	word_literal(2, "R0", (code) s0);
-	word_literal(2, "rp", (code) &sp);
-
-	/* constants */
-	word_literal(4, "CELL", (code) sizeof(cell));
-	word_literal(5, "BLOCK", (code) BLOCK);
-	word_literal(7, "VERSION", (code) 1);
-	word_literal(14, "FLAG_IMMEDIATE", (code) FLAG_IMMEDIATE);
-	word_literal(11, "FLAG_HIDDEN", (code) FLAG_HIDDEN);
-	word_literal(14, "FLAG_PRIMITIVE", (code) FLAG_PRIMITIVE);
-	word_literal(12, "FLAG_LENMASK", (code) FLAG_LENMASK);
-
-	/* include file */
-	word_primitive(7, "include", 0, include);
-
-	/* DEBUG */
-	word_primitive(2, ".s", 0, printstack);
-	word_primitive(5, "debug", 0, debug);
-	word_primitive(4, "dump", 0, dump);
-	word_primitive(5, "abort", 0, _abort);
-
-	/* quit */
-	word_header(4, "quit", 0);
-	word_append(quit);
-	word_append(interpret);
-	word_append(fetch_eol);
-	word_append(zbranch);
-	word_append((code) -3);
-	word_append(ok);
-	word_append(branch);
-	word_append((code) -7);
-}
 
 int main()
 {
-	init();
-	fp = fopen("core.fs", "r");
-	ip = (code*) (latest -> data);
+	dictionary = malloc(DICTIONARY_SIZE);
+
+	if (!dictionary)
+	{
+		perror(NULL);
+		return 1;
+	}
+
+	here = dictionary;
+
+	header(4 | FLAG_PRIMITIVE, "drop");
+	cell_append((cell) drop);
+	cell_append((cell) ret);
+
+	header(3 | FLAG_PRIMITIVE, "dup");
+	cell_append((cell) dup);
+	cell_append((cell) ret);
+
+	header(4 | FLAG_PRIMITIVE, "over");
+	cell_append((cell) over);
+	cell_append((cell) ret);
+
+	header(4 | FLAG_PRIMITIVE, "swap");
+	cell_append((cell) swap);
+	cell_append((cell) ret);
+
+	header(3 | FLAG_PRIMITIVE, "rot");
+	cell_append((cell) rot);
+	cell_append((cell) ret);
+
+	header(2 | FLAG_PRIMITIVE, ">r");
+	cell_append((cell) to_r);
+	cell_append((cell) ret);
+
+	header(2 | FLAG_PRIMITIVE, "r>");
+	cell_append((cell) r_from);
+	cell_append((cell) ret);
+
+	header(2 | FLAG_PRIMITIVE, "2*");
+	cell_append((cell) left_shift);
+	cell_append((cell) ret);
+
+	header(2 | FLAG_PRIMITIVE, "2/");
+	cell_append((cell) right_shift);
+	cell_append((cell) ret);
+
+	header(3 | FLAG_PRIMITIVE, "not");
+	cell_append((cell) not);
+	cell_append((cell) ret);
+
+	header(3 | FLAG_PRIMITIVE, "and");
+	cell_append((cell) and);
+	cell_append((cell) ret);
+
+	header(3 | FLAG_PRIMITIVE, "xor");
+	cell_append((cell) xor);
+	cell_append((cell) ret);
+
+	header(2 | FLAG_PRIMITIVE, "or");
+	cell_append((cell) or);
+	cell_append((cell) ret);
+
+	header(1 | FLAG_PRIMITIVE, "+");
+	cell_append((cell) add);
+	cell_append((cell) ret);
+
+	header(1 | FLAG_PRIMITIVE, "-");
+	cell_append((cell) sub);
+	cell_append((cell) ret);
+
+	header(1 | FLAG_PRIMITIVE, "*");
+	cell_append((cell) mul);
+	cell_append((cell) ret);
+
+	header(1 | FLAG_PRIMITIVE, "/");
+	cell_append((cell) quot);
+	cell_append((cell) ret);
+
+	header(3 | FLAG_PRIMITIVE, "mod");
+	cell_append((cell) rem);
+	cell_append((cell) ret);
+
+	header(1 | FLAG_PRIMITIVE, "<");
+	cell_append((cell) lt);
+	cell_append((cell) ret);
+
+	header(1 | FLAG_PRIMITIVE, "=");
+	cell_append((cell) eq);
+	cell_append((cell) ret);
+
+	header(1 | FLAG_PRIMITIVE, ">");
+	cell_append((cell) gt);
+	cell_append((cell) ret);
+
+	header(2 | FLAG_PRIMITIVE, "c@");
+	cell_append((cell) cfetch);
+	cell_append((cell) ret);
+
+	header(2 | FLAG_PRIMITIVE, "c!");
+	cell_append((cell) cstore);
+	cell_append((cell) ret);
+
+	header(1 | FLAG_PRIMITIVE, "@");
+	cell_append((cell) fetch);
+	cell_append((cell) ret);
+
+	header(1 | FLAG_PRIMITIVE, "!");
+	cell_append((cell) store);
+	cell_append((cell) ret);
+
+	header(2 | FLAG_PRIMITIVE, "+!");
+	cell_append((cell) addstore);
+	cell_append((cell) ret);
+
+	header(4 | FLAG_PRIMITIVE, "move");
+	cell_append((cell) move);
+	cell_append((cell) ret);
+
+	header(5 | FLAG_PRIMITIVE, "cmove");
+	cell_append((cell) cmove);
+	cell_append((cell) ret);
+
+	header(4 | FLAG_PRIMITIVE, "fill");
+	cell_append((cell) fill);
+	cell_append((cell) ret);
+
+	header(3 | FLAG_PRIMITIVE, "key");
+	cell_append((cell) key);
+	cell_append((cell) ret);
+
+	header(4 | FLAG_PRIMITIVE, "emit");
+	cell_append((cell) emit);
+	cell_append((cell) ret);
+
+	header(6 | FLAG_PRIMITIVE, "expect");
+	cell_append((cell) expect);
+	cell_append((cell) ret);
+
+	header(4 | FLAG_PRIMITIVE, "type");
+	cell_append((cell) type);
+	cell_append((cell) ret);
+
+	header(5 | FLAG_PRIMITIVE, "parse");
+	cell_append((cell) parse);
+	cell_append((cell) ret);
+
+	header(4 | FLAG_PRIMITIVE, "call");
+	cell_append((cell) call);
+	cell_append((cell) ret);
+
+	header(4 | FLAG_PRIMITIVE, "exit");
+	cell_append((cell) ret);
+	cell_append((cell) ret);
+
+	header(3 | FLAG_PRIMITIVE, "lit");
+	cell_append((cell) lit);
+	cell_append((cell) ret);
+
+	header(6 | FLAG_PRIMITIVE, "branch");
+	cell_append((cell) branch);
+	cell_append((cell) ret);
+
+	header(7 | FLAG_PRIMITIVE, "0branch");
+	cell_append((cell) zbranch);
+	cell_append((cell) ret);
+
+	header(9 | FLAG_PRIMITIVE, "litstring");
+	cell_append((cell) litstring);
+	cell_append((cell) ret);
+
+	header(2 | FLAG_PRIMITIVE, "c,");
+	cell_append((cell) byte_comma);
+	cell_append((cell) ret);
+
+	header(1 | FLAG_PRIMITIVE, ",");
+	cell_append((cell) comma);
+	cell_append((cell) ret);
+
+	header(2 | FLAG_PRIMITIVE, "s,");
+	cell_append((cell) string_comma);
+	cell_append((cell) ret);
+
+	header(5 | FLAG_PRIMITIVE, "align");
+	cell_append((cell) align);
+	cell_append((cell) ret);
+
+	header(6 | FLAG_PRIMITIVE, "header");
+	cell_append((cell) _header);
+	cell_append((cell) ret);
+
+	header(4 | FLAG_PRIMITIVE, "word");
+	cell_append((cell) word);
+	cell_append((cell) ret);
+
+	header(6 | FLAG_PRIMITIVE, "number");
+	cell_append((cell) number);
+	cell_append((cell) ret);
+
+	header(4 | FLAG_PRIMITIVE, "find");
+	cell_append((cell) find);
+	cell_append((cell) ret);
+
+	header(7 | FLAG_PRIMITIVE, "execute");
+	cell_append((cell) execute);
+	cell_append((cell) ret);
+
+	header(7 | FLAG_PRIMITIVE | FLAG_IMMEDIATE, "literal");
+	cell_append((cell) literal);
+	cell_append((cell) ret);
+
+	header(8 | FLAG_PRIMITIVE, "compile,");
+	cell_append((cell) compile);
+	cell_append((cell) ret);
+
+	header(5 | FLAG_PRIMITIVE, ">body");
+	cell_append((cell) to_body);
+	cell_append((cell) ret);
+
+	header(6 | FLAG_PRIMITIVE, ">count");
+	cell_append((cell) to_count);
+	cell_append((cell) ret);
+
+	header(5 | FLAG_PRIMITIVE, "count");
+	cell_append((cell) count);
+	cell_append((cell) ret);
+
+	header(10, "dictionary");
+	cell_append((cell) lit);
+	cell_append((cell) &dictionary);
+	cell_append((cell) ret);
+
+	header(6, "latest");
+	cell_append((cell) lit);
+	cell_append((cell) &latest);
+	cell_append((cell) ret);
+
+	header(4, "here");
+	cell_append((cell) lit);
+	cell_append((cell) &here);
+	cell_append((cell) ret);
+
+	header(5, "state");
+	cell_append((cell) lit);
+	cell_append((cell) &state);
+	cell_append((cell) ret);
+	
+	header(6, "buffer");
+	cell_append((cell) lit);
+	cell_append((cell) &buffer);
+	cell_append((cell) ret);
+	
+	header(2, "in");
+	cell_append((cell) lit);
+	cell_append((cell) &in);
+	cell_append((cell) ret);
+	
+	header(2, "sp");
+	cell_append((cell) lit);
+	cell_append((cell) &sp);
+	cell_append((cell) ret);
+	
+	header(2, "S0");
+	cell_append((cell) lit);
+	cell_append((cell) s0);
+	cell_append((cell) ret);
+	
+	header(3, "rsp");
+	cell_append((cell) lit);
+	cell_append((cell) &rp);
+	cell_append((cell) ret);
+	
+	header(3, "RS0");
+	cell_append((cell) lit);
+	cell_append((cell) r0);
+	cell_append((cell) ret);
+
+	header(1 | FLAG_IMMEDIATE, "[");
+	cell_append((cell) lit);
+	cell_append((cell) 0);
+	cell_append((cell) lit);
+	cell_append((cell) &state);
+	cell_append((cell) store);
+	cell_append((cell) ret);
+
+	header(1, "]");
+	cell_append((cell) lit);
+	cell_append((cell) -1);
+	cell_append((cell) lit);
+	cell_append((cell) &state);
+	cell_append((cell) store);
+	cell_append((cell) ret);
+	
+	header(4, "CELL");
+	cell_append((cell) lit);
+	cell_append((cell) sizeof(cell));
+	cell_append((cell) ret);
+	
+	header(14, "FLAG_IMMEDIATE");
+	cell_append((cell) lit);
+	cell_append((cell) FLAG_IMMEDIATE);
+	cell_append((cell) ret);
+	
+	header(11, "FLAG_HIDDEN");
+	cell_append((cell) lit);
+	cell_append((cell) FLAG_HIDDEN);
+	cell_append((cell) ret);
+	
+	header(14, "FLAG_PRIMITIVE");
+	cell_append((cell) lit);
+	cell_append((cell) FLAG_PRIMITIVE);
+	cell_append((cell) ret);
+	
+	header(12, "FLAG_LENMASK");
+	cell_append((cell) lit);
+	cell_append((cell) FLAG_LENMASK);
+	cell_append((cell) ret);
+
+	header(4, "quit");
+	cell_append((cell) reset);
+	cell_append((cell) interpret);
+	cell_append((cell) is_out);
+	cell_append((cell) zbranch);
+	cell_append((cell) -3 * sizeof(cell));
+	cell_append((cell) ok);
+	cell_append((cell) branch);
+	cell_append((cell) -7 * sizeof(cell));
+
+	push((cell) latest);
+	to_body();
+	ip = (code*) pop();
+
+	header(5, "abort");
+	cell_append((cell) aborts);
+	cell_append((cell) call);
+	cell_append((cell) ip);
+
+	header(7, "include");
+	cell_append((cell) word);
+	cell_append((cell) include);
+	cell_append((cell) ret);
+
+	/* DEBUG */
+	header(1 | FLAG_PRIMITIVE, ".");
+	cell_append((cell) dot);
+	cell_append((cell) ret);
+
+	/* DEBUG */
+	header(2 | FLAG_PRIMITIVE, ".s");
+	cell_append((cell) printstack);
+	cell_append((cell) ret);
+
+	/* DEBUG */
+	header(4 | FLAG_PRIMITIVE, "dump");
+	cell_append((cell) _dump);
+	cell_append((cell) ret);
+	
+	header(7, "VERSION");
+	cell_append((cell) lit);
+	cell_append((cell) VERSION);
+	cell_append((cell) ret);
+	
+	header(4, "arch");
+	cell_append((cell) lit);
+	cell_append((cell) &arch);
+	cell_append((cell) ret);
+	
+	header(2, "os");
+	cell_append((cell) lit);
+	cell_append((cell) &os);
+	cell_append((cell) ret);
+
+	fp = fopen("basic.fs", "r");
+
 	while (ip) (*ip++)();
+
 	return 0;
 }
