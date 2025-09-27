@@ -216,20 +216,6 @@ create ; immediate
 
 \ MISC
 
-\ see memory content of latest word
-: recent ( n -- )
-  latest @ swap cells dump
-;
-
-\ see memory content of next word
-: see ( n "name" -- )
-  cells '
-  dup 0 = if
-    2drop exit
-  then
-  swap dump
-;
-
 \ exit forth
 : bye ( -- ) 0 >r ;
 
@@ -246,8 +232,37 @@ create ; immediate
   drop
 ;
 
+: space
+  32 emit
+;
 
-\ startup message
+: words
+  latest @
+  begin
+    dup >count count
+    FLAG_LENMASK and type space
+    @
+  dup 0 = until
+  drop
+;
+
+\ see memory content of latest word
+: recent ( -- )
+  latest @ 20 cells dump
+;
+
+\ see memory content of next word
+: see ( n "name" -- )
+  cells '
+  dup 0 = if
+    ." Word not found" cr
+    2drop exit
+  then
+  swap dump
+;
+
+
+\ STARTUP MESSAGE
 ." Welcome to lightforth" cr
 ." Built for " arch puts ." -" os puts ." , version 20250926" cr
 ." lightforth comes with ABSOLUTELY NO WARRANTY" cr
