@@ -51,7 +51,8 @@ create ; immediate
 ;
 
 \ for during compilation mode
-: ['] ( "name" -- header ) '
+: ['] ( "name" -- header )
+  '
 ; immediate
 
 \ compile word to current definition
