@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdalign.h>
 
-#define VERSION 20250926
+#define VERSION 20250928
 
 #define BLOCK_SIZE 1024
 #define DICTIONARY_SIZE (BLOCK_SIZE * 64)
@@ -409,21 +409,6 @@ void parse()
 	push(len);
 }
 
-
-/* DEBUG */
-void dot()
-{
-	printf("%ld ", pop());
-}
-
-/* DEBUG */
-void printstack()
-{
-	fputs("[ ", stdout);
-	cell* ptr = s0 + 1;
-	while (ptr <= sp) printf("%ld ", *ptr++);
-	fputs("] ", stdout);
-}
 
 /* in according to the traditions of our great fathers */
 void ok()
@@ -1096,34 +1081,13 @@ int main()
 	cell_append((cell) ret);
 
 	/* DEBUG */
-	header(1 | FLAG_PRIMITIVE, ".");
-	cell_append((cell) dot);
-	cell_append((cell) ret);
-
-	/* DEBUG */
-	header(2 | FLAG_PRIMITIVE, ".s");
-	cell_append((cell) printstack);
-	cell_append((cell) ret);
-
-	/* DEBUG */
 	header(4 | FLAG_PRIMITIVE, "dump");
 	cell_append((cell) _dump);
 	cell_append((cell) ret);
 	
-	header(7, "VERSION");
-	cell_append((cell) lit);
-	cell_append((cell) VERSION);
-	cell_append((cell) ret);
-	
-	header(4, "arch");
-	cell_append((cell) lit);
-	cell_append((cell) &arch);
-	cell_append((cell) ret);
-	
-	header(2, "os");
-	cell_append((cell) lit);
-	cell_append((cell) &os);
-	cell_append((cell) ret);
+	printf("Welcome to lightforth\n");
+	printf("Built for %s-%s, version %d\n", arch, os, VERSION);
+	printf("lightforth comes with ABSOLUTELY NO WARRANTY\n");
 
 	fp = fopen("basic.fs", "r");
 
