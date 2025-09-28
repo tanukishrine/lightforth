@@ -2,7 +2,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stddef.h>
-#include <stdalign.h>
 
 #define VERSION 20250928
 
@@ -83,8 +82,8 @@ void string_append(byte* addr, cell size)
 void align()
 {
 	uintptr_t ptr = (uintptr_t) here;
-	here = (byte*) ((ptr + alignof(cell) - 1)
-		& ~(alignof(cell) - 1));
+	here = (byte*) ((ptr + sizeof(cell) - 1)
+		& ~(sizeof(cell) - 1));
 }
 
 /* create new word header */
