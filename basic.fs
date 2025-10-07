@@ -533,3 +533,10 @@ create pad ( -- addr )
   then
   swap dump
 ;
+
+: reset ( -- )
+  [ latest @ ] literal
+  latest !
+  [ here @ ] literal
+  here !
+;
