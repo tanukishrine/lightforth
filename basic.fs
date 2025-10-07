@@ -317,14 +317,6 @@ create ; immediate
 ;
 
 
-\ MEMORY
-
-\ print content at "addr"
-: ? ( addr -- )
-  @ .
-;
-
-
 \ DEFINING WORDS
 
 : constant ( n "name" -- )
@@ -437,6 +429,14 @@ create ; immediate
   repeat
   drop
   ']' emit space
+;
+
+
+\ MEMORY
+
+\ print content at "addr"
+: ? ( addr -- )
+  @ .
 ;
 
 
